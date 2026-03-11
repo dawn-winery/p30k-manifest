@@ -32,7 +32,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           EXISTS=$(gh release view "${{ steps.version.outputs.version }}" \
-            --repo ${{ github.repository }} 2>/dev/null && echo "true" || echo "false")
+            --repo ${{ github.repository }} 2>/dev/null 1>/dev/null && echo "true" || echo "false")
           echo "exists=$EXISTS" >> $GITHUB_OUTPUT
 
       - name: Generate manifest
