@@ -1,0 +1,80 @@
+name: Generate Manifest
+
+on:
+  schedule:
+    - cron: '0 */2 * * *'
+  workflow_dispatch:
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fetch latest version
+        id: version
+        env:
+          PROXY_ENDPOINT: ${{ secrets.PROXY_ENDPOINT }}
+          PROXY_REQUEST_BODY: ${{ secrets.PROXY_REQUEST_BODY }}
+        run: |
+          RESPONSE=$(curl -s -X POST \
+            --data "$PROXY_REQUEST_BODY" \
+            -H "Content-Type: application/json" \
+            "$PROXY_ENDPOINT")
+
+          VERSION=$(echo "$RESPONSE" | jq -r '.proxy_rsps[0].get_latest_game_rsp.version')
+          FILE_URL=$(echo "$RESPONSE" | jq -r '.proxy_rsps[0].get_latest_game_rsp.pkg.file_path')
+
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "file_url=$FILE_URL" >> $GITHUB_OUTPUT
+
+      - name: Check if release already exists
+        id: check
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          EXISTS=$(gh release view "${{ steps.version.outputs.version }}" \
+            --repo ${{ github.repository }} 2>/dev/null && echo "true" || echo "false")
+          echo "exists=$EXISTS" >> $GITHUB_OUTPUT
+
+      - name: Generate manifest
+        if: steps.check.outputs.exists == 'false'
+        env:
+          AES_KEY: ${{ secrets.AES_KEY }}
+          AES_IV: ${{ secrets.AES_IV }}
+          FILE_URL: ${{ steps.version.outputs.file_url }}
+        run: |
+          curl -s "$FILE_URL/game_files" \
+            | openssl enc -d -aes-256-cbc \
+                -iv "$AES_IV" \
+                -K "$AES_KEY" \
+                -nosalt \
+            | jq -r '"\(.md5)\t\(.path)"' \
+            > manifest.tsv
+
+          cp manifest.tsv latest.tsv
+
+      - name: Create versioned release
+        if: steps.check.outputs.exists == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          gh release create "$VERSION" \
+            manifest.tsv \
+            --repo ${{ github.repository }} \
+            --title "$VERSION" \
+            --notes "Auto-generated manifest for version $VERSION"
+
+      - name: Update latest release
+        if: steps.check.outputs.exists == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release view latest --repo ${{ github.repository }} 2>/dev/null \
+            && gh release upload latest latest.tsv \
+                --repo ${{ github.repository }} \
+                --clobber \
+            || gh release create latest latest.tsv \
+                --repo ${{ github.repository }} \
+                --title "Latest" \
+                --notes "Always points to the latest manifest" \
+                --prerelease
